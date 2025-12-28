@@ -81,41 +81,39 @@ contract PoolToken is ERC20, ReentrancyGuard {
         return totalEntitlement > debt ? totalEntitlement - debt : 0;
     }
 
-    /**
-     * @dev Claim all pending proceeds
-     */
-    function claimProceeds() public nonReentrant {
-        uint256 pending = pendingProceeds(msg.sender);
-        require(pending > 0, "PoolToken: no proceeds to claim");
+    function claimProceeds() external nonReentrant {
+        uint256 pendingAmount = pendingProceeds(msg.sender);
+        require(pendingAmount > 0, "PoolToken: no proceeds to claim");
 
-        // Update debt and transfer
-        userDebt[msg.sender] += pending;
-        require(usdToken.transfer(msg.sender, pending), "PoolToken: transfer failed");
+        // EFFECTS: Update state first
+        userDebt[msg.sender] += pendingAmount;
 
-        emit ProceedsClaimed(msg.sender, pending);
+        // INTERACTIONS: Transfer USD tokens
+        require(
+            usdToken.transfer(msg.sender, pendingAmount),
+            "PoolToken: proceeds transfer failed"
+        );
+
+        emit ProceedsClaimed(msg.sender, pendingAmount);
     }
 
-    /**
-     * @dev Withdraw pool tokens and redeem USD (1:1)
-     * Claims pending proceeds first
-     * @param amount Pool tokens to withdraw
-     */
     function withdraw(uint256 amount) external nonReentrant {
         require(amount > 0, "PoolToken: amount must be > 0");
         require(balanceOf(msg.sender) >= amount, "PoolToken: insufficient balance");
 
-        // Claim any pending proceeds first
-        uint256 pending = pendingProceeds(msg.sender);
-        if (pending > 0) {
-            userDebt[msg.sender] += pending;
-            require(usdToken.transfer(msg.sender, pending), "PoolToken: proceeds transfer failed");
-            emit ProceedsClaimed(msg.sender, pending);
+        // Claim pending proceeds first (safe with reentrancy guard)
+        uint256 pendingAmount = pendingProceeds(msg.sender);
+        if (pendingAmount > 0) {
+            userDebt[msg.sender] += pendingAmount;
+            require(
+                usdToken.transfer(msg.sender, pendingAmount),
+                "PoolToken: proceeds transfer failed"
+            );
+            emit ProceedsClaimed(msg.sender, pendingAmount);
         }
 
-        // Burn pool tokens
+        // EFFECTS: Burn pool tokens and update debt
         _burn(msg.sender, amount);
-
-        // Reduce userDebt proportionally to withdrawn tokens
         uint256 debtReduction = (amount * accProceedsPerShare) / PRECISION;
         if (userDebt[msg.sender] >= debtReduction) {
             userDebt[msg.sender] -= debtReduction;
@@ -123,7 +121,11 @@ contract PoolToken is ERC20, ReentrancyGuard {
             userDebt[msg.sender] = 0;
         }
 
-        // Transfer USD back (1:1)
-        require(usdToken.transfer(msg.sender, amount), "PoolToken: USD transfer failed");
+        // INTERACTIONS: Transfer USD tokens
+        require(
+            usdToken.transfer(msg.sender, amount),
+            "PoolToken: USD transfer failed"
+        );
     }
+
 }

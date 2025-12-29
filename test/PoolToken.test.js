@@ -235,7 +235,7 @@ describe("PoolToken Tests", function () {
   
 
 /* =============================================================
-   ADDITIONAL TESTS FOR ADMIN & ROUNDING DUST
+   ADDITIONAL TESTS FOR ADMIN & UPGRADE & ROUNDING DUST
    ============================================================= */
 
    describe("Admin Access Control", function () {
@@ -284,6 +284,29 @@ describe("PoolToken Tests", function () {
       expect(balanceAfterClaim).to.equal(userAmount + expectedDust);
     });
   });
+
+  describe("PoolToken Upgrade", function () {
+    it("Should preserve state and allow new functions after upgrade", async function () {
+      
+      await usdToken.mint(owner.address, ethers.parseEther("1000"));
+      await usdToken.connect(owner).approve(poolToken.target, ethers.parseEther("1000"));
+      await poolToken.connect(owner).deposit(ethers.parseEther("500"));
+  
+      // Upgrade to V2
+      const PoolTokenV2 = await ethers.getContractFactory("PoolTokenV2");
+      const upgraded = await upgrades.upgradeProxy(poolToken.target, PoolTokenV2);
+      await upgraded.waitForDeployment(); // Good practice to wait
+  
+      // Verify state
+      const balance = await upgraded.balanceOf(owner.address);
+      expect(balance).to.equal(ethers.parseEther("500"));
+  
+      // New function works
+      await upgraded.newFeature();
+    });
+  });
+  
+  
 
   /* =============================================================
      ADMIN TRANSFER

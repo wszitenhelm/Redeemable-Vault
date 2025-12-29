@@ -109,3 +109,22 @@ per transaction, not intent-based fairness across same-block operations.
 
 **Production Recommendation:**
 To make this protocol "transfer-ready," the `_update` (OpenZeppelin v5.x) or `_beforeTokenTransfer` (OpenZeppelin v4.x) internal functions should be overridden to settle pending proceeds for both the `from` and `to` addresses before any balance change occurs.
+
+
+## Upgradable Contract
+
+`PoolToken` is implemented as an **upgradeable proxy using OpenZeppelin upgrades plugin**.  
+
+- Current implementation: `PoolTokenV1`  
+- Upgraded version: `PoolTokenV2`  
+- All state (balances, proceeds, userDebt, admin) is preserved during upgrades.  
+- Diamond pattern **not used** because the files are small (<24 kB). Diamonds are recommended for very large or modular contracts.  
+
+Deployment & upgrade scripts:
+- `deployV1.js` – deploys `USDToken` and `PoolTokenV1` proxy  
+- `upgradeV2.js` – upgrades the proxy to `PoolTokenV2`  
+
+Tests ensure:
+- Original state persists after upgrade  
+- New functions in V2 work as expected  
+- Existing logic is unaffected

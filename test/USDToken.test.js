@@ -91,5 +91,6 @@ describe("USDToken", function () {
       expect(await usdToken.balanceOf(user2.address)).to.equal(transferAmount);
     });
   });
+
 });
 

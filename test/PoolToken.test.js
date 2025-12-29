@@ -264,5 +264,46 @@ describe("PoolToken – Security Tests", function () {
       expect(pending).to.be.lte((userAmount * accPerShare) / (10n ** 18n));
     });
   });
-  
+
+  /* =============================================================
+     ADMIN TRANSFER
+     ============================================================= */
+
+     describe("PoolToken – Admin Transfer", function () {
+        it("Allows admin transfer and acceptance", async function () {
+          const [owner, newAdmin] = await ethers.getSigners();
+      
+          // Admin initiates transfer
+          await expect(poolToken.connect(owner).transferAdmin(newAdmin.address))
+            .to.emit(poolToken, "AdminTransferInitiated")
+            .withArgs(owner.address, newAdmin.address);
+      
+          expect(await poolToken.pendingAdmin()).to.equal(newAdmin.address);
+      
+          // Pending admin accepts
+          await expect(poolToken.connect(newAdmin).acceptAdmin())
+            .to.emit(poolToken, "AdminTransferCompleted")
+            .withArgs(owner.address, newAdmin.address);
+      
+          expect(await poolToken.admin()).to.equal(newAdmin.address);
+          expect(await poolToken.pendingAdmin()).to.equal(ethers.ZeroAddress);
+        });
+      
+        it("Reverts on unauthorized or invalid actions", async function () {
+          const [owner, newAdmin, attacker] = await ethers.getSigners();
+      
+          // Only admin can initiate
+          await expect(poolToken.connect(attacker).transferAdmin(newAdmin.address))
+            .to.be.revertedWith("PoolToken: only admin");
+      
+          // Cannot transfer to zero address
+          await expect(poolToken.connect(owner).transferAdmin(ethers.ZeroAddress))
+            .to.be.revertedWith("PoolToken: invalid admin address");
+      
+          // Only pending admin can accept
+          await poolToken.connect(owner).transferAdmin(newAdmin.address);
+          await expect(poolToken.connect(attacker).acceptAdmin())
+            .to.be.revertedWith("PoolToken: not pending admin");
+        });
+      });      
 });

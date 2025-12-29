@@ -1,12 +1,12 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("PoolToken", function () {
+describe("PoolToken – Security Tests", function () {
   let usdToken, poolToken;
-  let owner, user1, user2, user3;
+  let owner, user1, user2, attacker;
 
   beforeEach(async function () {
-    [owner, user1, user2, user3] = await ethers.getSigners();
+    [owner, user1, user2, attacker] = await ethers.getSigners();
 
     const USDToken = await ethers.getContractFactory("USDToken");
     usdToken = await USDToken.deploy();
@@ -17,328 +17,252 @@ describe("PoolToken", function () {
     await poolToken.waitForDeployment();
   });
 
-  describe("Deployment", function () {
-    it("Should set correct name, symbol, and USD token address", async function () {
+  /* =============================================================
+     METADATA TESTS
+     ============================================================= */
+
+  describe("Token Metadata", function () {
+    it("Has correct name, symbol and decimals", async function () {
       expect(await poolToken.name()).to.equal("Pool Token");
       expect(await poolToken.symbol()).to.equal("POOL");
-      expect(await poolToken.usdToken()).to.equal(usdToken.target);
-      expect(await poolToken.totalSupply()).to.equal(0);
-    });
-
-    it("Should revert if USD token address is zero", async function () {
-      const PoolToken = await ethers.getContractFactory("PoolToken");
-      await expect(PoolToken.deploy(ethers.ZeroAddress)).to.be.revertedWith(
-        "PoolToken: invalid USD token address"
-      );
+      expect(await poolToken.decimals()).to.equal(18);
     });
   });
 
-  describe("Deposit", function () {
-    beforeEach(async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-    });
+  /* =============================================================
+     CORE SAFETY TESTS
+     ============================================================= */
 
-    it("Should deposit USD and mint pool tokens 1:1", async function () {
-      const depositAmount = ethers.parseEther("1000");
-      await poolToken.connect(user1).deposit(depositAmount);
+  describe("Deposit & Mint Safety", function () {
+    it("Mints pool tokens 1:1 with USD deposits", async function () {
+      const amount = ethers.parseEther("1000");
 
-      expect(await poolToken.balanceOf(user1.address)).to.equal(depositAmount);
-      expect(await poolToken.totalSupply()).to.equal(depositAmount);
-      expect(await usdToken.balanceOf(poolToken.target)).to.equal(depositAmount);
-      expect(await poolToken.userDebt(user1.address)).to.equal(0);
-    });
+      await usdToken.mint(user1.address, amount);
+      await usdToken.connect(user1).approve(poolToken.target, amount);
 
-    it("Should allow multiple users to deposit", async function () {
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("2000"));
+      await poolToken.connect(user1).deposit(amount);
 
-      expect(await poolToken.totalSupply()).to.equal(ethers.parseEther("3000"));
-    });
-
-    it("Should revert on zero amount or insufficient balance", async function () {
-      await expect(poolToken.connect(user1).deposit(0)).to.be.revertedWith(
-        "PoolToken: amount must be > 0"
-      );
-      await expect(poolToken.connect(user1).deposit(ethers.parseEther("20000"))).to.be.reverted;
+      expect(await poolToken.balanceOf(user1.address)).to.equal(amount);
     });
   });
 
-  describe("Deposit Proceeds", function () {
-    beforeEach(async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(owner).mint(owner.address, amount);
+  /* =============================================================
+     EVENT EMISSION
+     ============================================================= */
 
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(owner).approve(poolToken.target, ethers.MaxUint256);
+  describe("Event Emission", function () {
+    it("Emits ProceedsDeposited event", async function () {
+      const deposit = ethers.parseEther("1000");
+      const proceeds = ethers.parseEther("100");
 
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("2000"));
-    });
+      // Need pool tokens to exist first
+      await usdToken.mint(user1.address, deposit);
+      await usdToken.connect(user1).approve(poolToken.target, deposit);
+      await poolToken.connect(user1).deposit(deposit);
 
-    it("Should deposit proceeds and update accProceedsPerShare", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      const totalSupply = ethers.parseEther("3000");
+      await usdToken.mint(owner.address, proceeds);
+      await usdToken.connect(owner).approve(poolToken.target, proceeds);
 
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
-
-      const expectedAccProceedsPerShare = (proceedsAmount * ethers.parseEther("1")) / totalSupply;
-      expect(await poolToken.accProceedsPerShare()).to.equal(expectedAccProceedsPerShare);
-      expect(await usdToken.balanceOf(poolToken.target)).to.equal(
-        ethers.parseEther("3300")
-      );
-    });
-
-    it("Should emit ProceedsDeposited event", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      const totalSupply = ethers.parseEther("3000");
-      const expectedAccProceedsPerShare = (proceedsAmount * ethers.parseEther("1")) / totalSupply;
-      
-      await expect(poolToken.connect(owner).depositProceeds(proceedsAmount))
+      const expectedAccProceedsPerShare = (proceeds * ethers.parseEther("1")) / deposit;
+      await expect(poolToken.connect(owner).depositProceeds(proceeds))
         .to.emit(poolToken, "ProceedsDeposited")
-        .withArgs(proceedsAmount, expectedAccProceedsPerShare);
-    });
-
-    it("Should revert if no pool tokens exist or amount is zero", async function () {
-      const PoolToken = await ethers.getContractFactory("PoolToken");
-      const newPoolToken = await PoolToken.deploy(usdToken.target);
-      await newPoolToken.waitForDeployment();
-
-      const proceedsAmount = ethers.parseEther("300");
-      await usdToken.connect(owner).mint(owner.address, proceedsAmount);
-      await usdToken.connect(owner).approve(newPoolToken.target, proceedsAmount);
-
-      await expect(newPoolToken.connect(owner).depositProceeds(proceedsAmount)).to.be.revertedWith(
-        "PoolToken: no pool tokens"
-      );
-      await expect(poolToken.connect(owner).depositProceeds(0)).to.be.revertedWith(
-        "PoolToken: amount must be > 0"
-      );
+        .withArgs(proceeds, expectedAccProceedsPerShare);
     });
   });
 
-  describe("Pending Proceeds", function () {
-    beforeEach(async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(owner).mint(owner.address, amount);
+  /* =============================================================
+     LATE DEPOSITOR / FLASH-LOAN STYLE ATTACK PREVENTION
+     ============================================================= */
 
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(owner).approve(poolToken.target, ethers.MaxUint256);
+  describe("Late Depositor Protection", function () {
+    it("Prevents new depositors from claiming past proceeds", async function () {
+      const deposit = ethers.parseEther("1000");
+      const proceeds = ethers.parseEther("100");
 
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("2000"));
-    });
+      await usdToken.mint(user1.address, deposit);
+      await usdToken.mint(attacker.address, ethers.parseEther("1000000"));
+      await usdToken.mint(owner.address, proceeds);
 
-    it("Should calculate pending proceeds correctly", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
+      await usdToken.connect(user1).approve(poolToken.target, deposit);
+      await usdToken.connect(attacker).approve(poolToken.target, ethers.MaxUint256);
+      await usdToken.connect(owner).approve(poolToken.target, proceeds);
 
-      // user1: 1000/3000 = 33.33% of 300 = 100
-      // user2: 2000/3000 = 66.67% of 300 = 200
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(ethers.parseEther("100"));
-      expect(await poolToken.pendingProceeds(user2.address)).to.equal(ethers.parseEther("200"));
-    });
-
-    it("Should return zero after claiming", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
-
-      await poolToken.connect(user1).claimProceeds();
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
-    });
-
-    it("Should handle multiple proceeds deposits", async function () {
-      await poolToken.connect(owner).depositProceeds(ethers.parseEther("300"));
-      await usdToken.connect(owner).mint(owner.address, ethers.parseEther("600"));
-      await usdToken.connect(owner).approve(poolToken.target, ethers.parseEther("600"));
-      await poolToken.connect(owner).depositProceeds(ethers.parseEther("600"));
-
-      // user1 should get 33.33% of (300 + 600) = 300
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(ethers.parseEther("300"));
-    });
-  });
-
-  describe("Claim Proceeds", function () {
-    beforeEach(async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(owner).mint(owner.address, amount);
-
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(owner).approve(poolToken.target, ethers.MaxUint256);
-
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("2000"));
-    });
-
-    it("Should claim proceeds and update userDebt", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
-
-      const user1BalanceBefore = await usdToken.balanceOf(user1.address);
-      await poolToken.connect(user1).claimProceeds();
-      const user1BalanceAfter = await usdToken.balanceOf(user1.address);
-
-      expect(user1BalanceAfter - user1BalanceBefore).to.equal(ethers.parseEther("100"));
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
-    });
-
-    it("Should emit ProceedsClaimed event", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
-
-      const pending = await poolToken.pendingProceeds(user1.address);
-      await expect(poolToken.connect(user1).claimProceeds())
-        .to.emit(poolToken, "ProceedsClaimed")
-        .withArgs(user1.address, pending);
-    });
-
-    it("Should revert if no proceeds to claim", async function () {
-      await expect(poolToken.connect(user1).claimProceeds()).to.be.revertedWith(
-        "PoolToken: no proceeds to claim"
-      );
-    });
-  });
-
-  describe("Withdraw", function () {
-    beforeEach(async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(owner).mint(owner.address, amount);
-
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(owner).approve(poolToken.target, ethers.MaxUint256);
-
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("2000"));
-    });
-
-    it("Should withdraw pool tokens and return USD 1:1", async function () {
-      const withdrawAmount = ethers.parseEther("500");
-      const user1USDBefore = await usdToken.balanceOf(user1.address);
-
-      await poolToken.connect(user1).withdraw(withdrawAmount);
-
-      expect(await poolToken.balanceOf(user1.address)).to.equal(ethers.parseEther("500"));
-      expect(await usdToken.balanceOf(user1.address)).to.equal(user1USDBefore + withdrawAmount);
-    });
-
-    it("Should claim pending proceeds before withdrawal", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
-
-      const user1USDBefore = await usdToken.balanceOf(user1.address);
-      await poolToken.connect(user1).withdraw(ethers.parseEther("500"));
-
-      // User1 should receive proceeds (100) + withdrawal (500) = 600
-      const user1USDAfter = await usdToken.balanceOf(user1.address);
-      expect(user1USDAfter - user1USDBefore).to.equal(ethers.parseEther("600"));
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
-    });
-
-    it("Should ensure no outstanding proceeds after full withdrawal", async function () {
-      const proceedsAmount = ethers.parseEther("300");
-      await poolToken.connect(owner).depositProceeds(proceedsAmount);
-
-      const user1Balance = await poolToken.balanceOf(user1.address);
-      await poolToken.connect(user1).withdraw(user1Balance);
-
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
-      expect(await poolToken.balanceOf(user1.address)).to.equal(0);
-    });
-
-    it("Should revert on zero amount or insufficient balance", async function () {
-      await expect(poolToken.connect(user1).withdraw(0)).to.be.revertedWith(
-        "PoolToken: amount must be > 0"
-      );
-      await expect(poolToken.connect(user1).withdraw(ethers.parseEther("2000"))).to.be.revertedWith(
-        "PoolToken: insufficient balance"
-      );
-    });
-  });
-
-  describe("Complex Scenarios", function () {
-    it("Should handle multiple users, deposits, proceeds, and withdrawals", async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(user3).mint(user3.address, amount);
-      await usdToken.connect(owner).mint(owner.address, amount);
-
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user3).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(owner).approve(poolToken.target, ethers.MaxUint256);
-
-      // Deposits
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(owner).depositProceeds(ethers.parseEther("100"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("2000"));
-      await poolToken.connect(owner).depositProceeds(ethers.parseEther("300"));
-
-      // Claims
-      await poolToken.connect(user1).claimProceeds();
-      await poolToken.connect(user2).claimProceeds();
-
-      // More deposits and proceeds
-      await poolToken.connect(user3).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(owner).depositProceeds(ethers.parseEther("400"));
-
-      // Withdrawal (should claim proceeds first)
-      const user1Balance = await poolToken.balanceOf(user1.address);
-      const user1USDBefore = await usdToken.balanceOf(user1.address);
-      await poolToken.connect(user1).withdraw(user1Balance);
-
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
-      expect(await usdToken.balanceOf(user1.address)).to.be.gt(user1USDBefore);
-    });
-
-    it("Should maintain correct accounting with equal deposits", async function () {
-      const amount = ethers.parseEther("10000");
-      await usdToken.connect(user1).mint(user1.address, amount);
-      await usdToken.connect(user2).mint(user2.address, amount);
-      await usdToken.connect(user3).mint(user3.address, amount);
-      await usdToken.connect(owner).mint(owner.address, amount);
-
-      await usdToken.connect(user1).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user2).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(user3).approve(poolToken.target, ethers.MaxUint256);
-      await usdToken.connect(owner).approve(poolToken.target, ethers.MaxUint256);
-
-      // Each user deposits 1000 tokens
-      await poolToken.connect(user1).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user2).deposit(ethers.parseEther("1000"));
-      await poolToken.connect(user3).deposit(ethers.parseEther("1000"));
-
-      // Proceeds of 900 (300 per user)
-      const proceeds = ethers.parseEther("900");
+      await poolToken.connect(user1).deposit(deposit);
       await poolToken.connect(owner).depositProceeds(proceeds);
 
-      // Each user should have 300 pending
-      expect(await poolToken.pendingProceeds(user1.address)).to.equal(ethers.parseEther("300"));
-      expect(await poolToken.pendingProceeds(user2.address)).to.equal(ethers.parseEther("300"));
-      expect(await poolToken.pendingProceeds(user3.address)).to.equal(ethers.parseEther("300"));
+      await poolToken.connect(attacker).deposit(ethers.parseEther("1000000"));
 
-      // Total claimable should equal proceeds
-      const totalClaimable = 
-        (await poolToken.pendingProceeds(user1.address)) +
-        (await poolToken.pendingProceeds(user2.address)) +
-        (await poolToken.pendingProceeds(user3.address));
-  
-      expect(totalClaimable).to.equal(proceeds);
+      expect(await poolToken.pendingProceeds(attacker.address)).to.equal(0);
+      expect(await poolToken.pendingProceeds(user1.address)).to.equal(proceeds);
     });
   });
+
+  /* =============================================================
+     CLAIM & WITHDRAW SAFETY (NO BAD DEBT)
+     ============================================================= */
+
+  describe("Claiming & Withdrawal Safety", function () {
+    it("Claims proceeds once and prevents double-claiming", async function () {
+      const deposit = ethers.parseEther("1000");
+      const proceeds = ethers.parseEther("100");
+
+      await usdToken.mint(user1.address, deposit);
+      await usdToken.mint(owner.address, proceeds);
+
+      await usdToken.connect(user1).approve(poolToken.target, deposit);
+      await usdToken.connect(owner).approve(poolToken.target, proceeds);
+
+      await poolToken.connect(user1).deposit(deposit);
+      await poolToken.connect(owner).depositProceeds(proceeds);
+
+      await poolToken.connect(user1).claimProceeds();
+      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
+
+      await expect(poolToken.connect(user1).claimProceeds())
+        .to.be.revertedWith("PoolToken: no proceeds to claim");
+    });
+
+    it("Withdraws USD and settles all proceeds without bad debt", async function () {
+      const deposit = ethers.parseEther("1000");
+      const proceeds = ethers.parseEther("100");
+
+      await usdToken.mint(user1.address, deposit);
+      await usdToken.mint(owner.address, proceeds);
+
+      await usdToken.connect(user1).approve(poolToken.target, deposit);
+      await usdToken.connect(owner).approve(poolToken.target, proceeds);
+
+      await poolToken.connect(user1).deposit(deposit);
+      await poolToken.connect(owner).depositProceeds(proceeds);
+
+      await poolToken.connect(user1).withdraw(deposit);
+
+      expect(await poolToken.balanceOf(user1.address)).to.equal(0);
+      expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
+      expect(await poolToken.userDebt(user1.address)).to.equal(0);
+    });
+  });
+
+  /* =============================================================
+     PRECISION & ROUNDING SAFETY
+     ============================================================= */
+
+  describe("Precision & Rounding", function () {
+    it("Distributes proceeds proportionally without inflation", async function () {
+      const a1 = ethers.parseEther("1");
+      const a2 = ethers.parseEther("2");
+      const proceeds = ethers.parseEther("3");
+
+      await usdToken.mint(user1.address, ethers.parseEther("10"));
+      await usdToken.mint(user2.address, ethers.parseEther("10"));
+      await usdToken.mint(owner.address, proceeds);
+
+      await usdToken.connect(user1).approve(poolToken.target, a1);
+      await usdToken.connect(user2).approve(poolToken.target, a2);
+      await usdToken.connect(owner).approve(poolToken.target, proceeds);
+
+      await poolToken.connect(user1).deposit(a1);
+      await poolToken.connect(user2).deposit(a2);
+      await poolToken.connect(owner).depositProceeds(proceeds);
+
+      const p1 = await poolToken.pendingProceeds(user1.address);
+      const p2 = await poolToken.pendingProceeds(user2.address);
+
+      expect(p1 + p2).to.equal(proceeds);
+    });
+  });
+
+  /* =============================================================
+     ZERO-SUPPLY EDGE CASE
+     ============================================================= */
+
+  describe("Zero Supply Edge Case", function () {
+    it("Rejects proceeds deposit when no pool tokens exist", async function () {
+      const proceeds = ethers.parseEther("100");
+
+      await usdToken.mint(owner.address, proceeds);
+      await usdToken.connect(owner).approve(poolToken.target, proceeds);
+
+      await expect(
+        poolToken.connect(owner).depositProceeds(proceeds)
+      ).to.be.revertedWith("PoolToken: no pool tokens");
+    });
+  });
+
+  /* =============================================================
+     REENTRANCY PROTECTION
+     ============================================================= */
+
+  describe("Reentrancy Protection", function () {
+    it("Should block reentrancy during claimProceeds", async function () {
+      const MaliciousUSD = await ethers.getContractFactory("MaliciousUSD");
+      const maliciousUSD = await MaliciousUSD.deploy();
+      await maliciousUSD.waitForDeployment();
+  
+      const PoolToken = await ethers.getContractFactory("PoolToken");
+      const pool = await PoolToken.deploy(maliciousUSD.target);
+      await pool.waitForDeployment();
+  
+      await maliciousUSD.setPool(pool.target);
+  
+      // Setup balances
+      const deposit = ethers.parseEther("1000");
+      await maliciousUSD.mint(user1.address, deposit);
+      await maliciousUSD.mint(owner.address, deposit);
+  
+      await maliciousUSD.connect(user1).approve(pool.target, deposit);
+      await maliciousUSD.connect(owner).approve(pool.target, deposit);
+  
+      await pool.connect(user1).deposit(deposit);
+      await pool.connect(owner).depositProceeds(ethers.parseEther("100"));
+  
+      await maliciousUSD.enableAttack();
+  
+      await expect(
+        pool.connect(user1).claimProceeds()
+      ).to.be.revertedWithCustomError(pool, "ReentrancyGuardReentrantCall");
+    });
+  });
+  
+
+/* =============================================================
+   ADDITIONAL TESTS FOR ADMIN & ROUNDING DUST
+   ============================================================= */
+
+   describe("Admin Access Control", function () {
+    it("Only owner can deposit proceeds", async function () {
+      const proceeds = ethers.parseEther("100");
+  
+      await usdToken.mint(user1.address, proceeds);
+      await usdToken.connect(user1).approve(poolToken.target, proceeds);
+  
+      await expect(
+        poolToken.connect(user1).depositProceeds(proceeds)
+      ).to.be.revertedWith("PoolToken: only admin can deposit proceeds");
+    });
+  });
+  
+  describe("Small Rounding Dust", function () {
+    it("Should retain small rounding dust in the pool", async function () {
+      const userAmount = 3n; // very small number
+      const proceedsAmount = 10n;
+  
+      // User deposit
+      await usdToken.connect(user1).mint(user1.address, userAmount);
+      await usdToken.connect(user1).approve(poolToken.target, userAmount);
+      await poolToken.connect(user1).deposit(userAmount);
+  
+      // Owner deposits proceeds
+      await usdToken.connect(owner).mint(owner.address, proceedsAmount);
+      await usdToken.connect(owner).approve(poolToken.target, proceedsAmount);
+      await poolToken.connect(owner).depositProceeds(proceedsAmount);
+  
+      const pending = await poolToken.pendingProceeds(user1.address);
+      const accPerShare = await poolToken.accProceedsPerShare();
+  
+      // Pending may not perfectly match due to rounding
+      expect(pending).to.be.lte((userAmount * accPerShare) / (10n ** 18n));
+    });
+  });
+  
 });

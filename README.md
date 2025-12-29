@@ -52,7 +52,7 @@ npm install
 
 ## Design Choices & Assumptions
 
-- Proceeds are distributed using a cumulative `accProceedsPerShare` model.
+- Proceeds are distributed using a cumulative `accProceedsPerShare` model to ensure gas-efficient solution.
 - Late depositors do not receive past proceeds.
 - Proceeds are claimable independently or automatically on withdrawal.
 - USD token is assumed to be a standard ERC-20 with no transfer fees or callbacks.
@@ -63,7 +63,6 @@ npm install
 
 - Reentrancy protected via checks-effects-interactions and `nonReentrant`.
 - Double-claim prevention via per-user debt accounting.
-- Proceeds cannot be deposited when total supply is zero.
 - Withdrawals always ensure sufficient USD balance exists.
 
 ## Testing
@@ -73,3 +72,40 @@ The test suite demonstrates resistance to:
 - Late depositor exploits
 - Double claiming
 - Insolvency / bad debt scenarios
+
+
+## Assumptions
+
+- Accounting is per-transaction sequential. Multiple deposits or withdrawals in the same block are processed in order.
+- Proceeds cannot be deposited when no pool tokens exist.
+- Proceeds are distributed based on cumulative `accProceedsPerShare` using 1e18 scaling. Small rounding dust remains in the pool.
+Integer Division & Dust: The contract uses the standard "Floor" rounding inherent in Solidity. When depositProceeds is called, any remainder (dust) resulting from the division of rewards by the total supply stays within the contract. This ensures the vault remains over-collateralized and prevents execution failure due to rounding errors.
+- Only a trusted role (admin/owner) can deposit proceeds.
+- Front-running / same-block manipulation is mitigated: new deposits do not retroactively receive past proceeds.
+- Upgradeability is planned as a future improvement; current balances and accounting are not migrated.
+
+### Transaction Ordering Assumption
+
+Proceeds are distributed based on the pool token balances at the exact moment
+`depositProceeds()` is executed.
+
+Due to Ethereum’s block construction and MEV mechanics, transactions within the
+same block may be reordered by validators. As a result, a user who submits a
+deposit transaction intended to precede a proceeds deposit may not receive those
+proceeds if the proceeds transaction is mined first.
+
+This is an inherent limitation of per-transaction accounting on Ethereum.
+The protocol guarantees correctness
+per transaction, not intent-based fairness across same-block operations.
+
+## Known Limitations & Assumptions
+
+### Token Transfers Between Users
+**Assumption:** The current implementation assumes that `PoolTokens` are not transferred between users via the standard ERC-20 `transfer` or `transferFrom` functions.
+
+**Technical Detail:** The reward accounting logic (cumulative accumulator) is currently triggered only during `deposit()`, `withdraw()`, and `claimProceeds()`. 
+* If a user transfers POOL tokens to another address, the `userDebt` (accounting for proceeds already claimed) will not automatically move with the tokens. 
+* This could lead to a scenario where the recipient is able to claim rewards that the sender was already entitled to, or the sender's debt remains inaccurately high.
+
+**Production Recommendation:**
+To make this protocol "transfer-ready," the `_update` (OpenZeppelin v5.x) or `_beforeTokenTransfer` (OpenZeppelin v4.x) internal functions should be overridden to settle pending proceeds for both the `from` and `to` addresses before any balance change occurs.

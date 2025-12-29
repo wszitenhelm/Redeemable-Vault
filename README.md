@@ -31,7 +31,6 @@ The application consists of two main token contracts:
    - Users should be able to convert their pool tokens back to USD tokens (1:1 conversion)
    - Users shouldn't have any outstanding proceed withdrawals after withdrawing (if withdrawals were the chosen method)
 
-
 ## Project Setup
 
 This project uses Hardhat for development, testing, and deployment.
@@ -44,11 +43,11 @@ npm install
 
 ### Available Commands
 
-- `npm run compile` - Compile Solidity contracts
-- `npm test` - Run tests
-- `npm run node` - Start a local Hardhat node
-- `npm run deploy` - Deploy contracts
-
+- `npx hardhat compile` - Compile Solidity contracts
+- `npx hardhat test` - Run Hardhat tests
+- `npx hardhat node` - Start a local Hardhat node
+- `npx hardhat run scripts/deployV1.js --network localhost` - Deploy contract
+- `npx hardhat run scripts/upgradeV2.js --network localhost` – Upgrade proxy to V2
 
 ## Design Choices & Assumptions
 
@@ -72,7 +71,6 @@ The test suite demonstrates resistance to:
 - Late depositor exploits
 - Double claiming
 - Insolvency / bad debt scenarios
-
 
 ## Assumptions
 
@@ -109,7 +107,6 @@ per transaction, not intent-based fairness across same-block operations.
 
 **Production Recommendation:**
 To make this protocol "transfer-ready," the `_update` (OpenZeppelin v5.x) or `_beforeTokenTransfer` (OpenZeppelin v4.x) internal functions should be overridden to settle pending proceeds for both the `from` and `to` addresses before any balance change occurs.
-
 
 ## Upgradable Contract
 

@@ -1,21 +1,26 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 
-describe("PoolToken – Security Tests", function () {
+describe("PoolToken Tests", function () {
   let usdToken, poolToken;
   let owner, user1, user2, attacker;
 
   beforeEach(async function () {
     [owner, user1, user2, attacker] = await ethers.getSigners();
-
+  
     const USDToken = await ethers.getContractFactory("USDToken");
     usdToken = await USDToken.deploy();
     await usdToken.waitForDeployment();
-
-    const PoolToken = await ethers.getContractFactory("PoolToken");
-    poolToken = await PoolToken.deploy(usdToken.target);
+  
+    const PoolToken = await ethers.getContractFactory("PoolTokenV1");
+  
+    // Use upgrades.deployProxy instead of deploy
+    poolToken = await upgrades.deployProxy(PoolToken, [usdToken.target], {
+      initializer: "initialize"
+    });
     await poolToken.waitForDeployment();
   });
+  
 
   /* =============================================================
      METADATA TESTS
@@ -23,7 +28,7 @@ describe("PoolToken – Security Tests", function () {
 
   describe("Token Metadata", function () {
     it("Has correct name, symbol and decimals", async function () {
-      expect(await poolToken.name()).to.equal("Pool Token");
+      expect(await poolToken.name()).to.equal("Pool Token V1");
       expect(await poolToken.symbol()).to.equal("POOL");
       expect(await poolToken.decimals()).to.equal(18);
     });
@@ -193,36 +198,40 @@ describe("PoolToken – Security Tests", function () {
      REENTRANCY PROTECTION
      ============================================================= */
 
-  describe("Reentrancy Protection", function () {
-    it("Should block reentrancy during claimProceeds", async function () {
-      const MaliciousUSD = await ethers.getContractFactory("MaliciousUSD");
-      const maliciousUSD = await MaliciousUSD.deploy();
-      await maliciousUSD.waitForDeployment();
+     describe("Reentrancy Protection", function () {
+      it("Should block reentrancy during claimProceeds", async function () {
+        const MaliciousUSD = await ethers.getContractFactory("MaliciousUSD");
+        const maliciousUSD = await MaliciousUSD.deploy();
+        await maliciousUSD.waitForDeployment();
   
-      const PoolToken = await ethers.getContractFactory("PoolToken");
-      const pool = await PoolToken.deploy(maliciousUSD.target);
-      await pool.waitForDeployment();
+        const PoolToken = await ethers.getContractFactory("PoolTokenV1");
   
-      await maliciousUSD.setPool(pool.target);
+        // Deploy upgradeable proxy
+        const pool = await upgrades.deployProxy(PoolToken, [maliciousUSD.target], {
+          initializer: "initialize"
+        });
+        await pool.waitForDeployment();
   
-      // Setup balances
-      const deposit = ethers.parseEther("1000");
-      await maliciousUSD.mint(user1.address, deposit);
-      await maliciousUSD.mint(owner.address, deposit);
+        await maliciousUSD.setPool(pool.target);
   
-      await maliciousUSD.connect(user1).approve(pool.target, deposit);
-      await maliciousUSD.connect(owner).approve(pool.target, deposit);
+        // Setup balances
+        const deposit = ethers.parseEther("1000");
+        await maliciousUSD.mint(user1.address, deposit);
+        await maliciousUSD.mint(owner.address, deposit);
   
-      await pool.connect(user1).deposit(deposit);
-      await pool.connect(owner).depositProceeds(ethers.parseEther("100"));
+        await maliciousUSD.connect(user1).approve(pool.target, deposit);
+        await maliciousUSD.connect(owner).approve(pool.target, deposit);
   
-      await maliciousUSD.enableAttack();
+        await pool.connect(user1).deposit(deposit);
+        await pool.connect(owner).depositProceeds(ethers.parseEther("100"));
   
-      await expect(
-        pool.connect(user1).claimProceeds()
-      ).to.be.revertedWithCustomError(pool, "ReentrancyGuardReentrantCall");
-    });
-  });
+        await maliciousUSD.enableAttack();
+  
+        await expect(pool.connect(user1).claimProceeds())
+        .to.be.revertedWithCustomError(pool, "ReentrancyGuardReentrantCall");
+    
+      });
+  });  
   
 
 /* =============================================================
@@ -258,7 +267,7 @@ describe("PoolToken – Security Tests", function () {
       const pending = await poolToken.pendingProceeds(user1.address);
       
       // Check exact math: 10 / 3 is 3.333... * 3 = 9. 
-      // We expect exactly 1 unit of dust to be trapped.
+      // Expect exactly 1 unit of dust to be trapped.
       const expectedDust = 1n; 
       expect(pending).to.equal(9n);
   

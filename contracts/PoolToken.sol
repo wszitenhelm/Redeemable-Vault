@@ -26,15 +26,34 @@ contract PoolToken is ERC20, ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
 
     address public admin;
+    address public pendingAdmin;
+
 
     // Events
     event ProceedsDeposited(uint256 amount, uint256 newAccProceedsPerShare);
     event ProceedsClaimed(address indexed user, uint256 amount);
+    event AdminTransferInitiated(address indexed currentAdmin, address indexed pendingAdmin);
+    event AdminTransferCompleted(address indexed previousAdmin, address indexed newAdmin);
 
     constructor(address _usdToken) ERC20("Pool Token", "POOL") {
         require(_usdToken != address(0), "PoolToken: invalid USD token address");
         usdToken = IERC20(_usdToken);
         admin = msg.sender;
+    }
+
+    function transferAdmin(address newAdmin) external {
+        require(msg.sender == admin, "PoolToken: only admin");
+        require(newAdmin != address(0), "PoolToken: invalid admin address");
+        pendingAdmin = newAdmin;
+        emit AdminTransferInitiated(admin, newAdmin);
+    }
+
+    function acceptAdmin() external {
+        require(msg.sender == pendingAdmin, "PoolToken: not pending admin");
+        address previousAdmin = admin;
+        admin = pendingAdmin;
+        pendingAdmin = address(0);
+        emit AdminTransferCompleted(previousAdmin, admin);
     }
 
     /**

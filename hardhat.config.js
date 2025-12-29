@@ -1,4 +1,6 @@
 require("@nomicfoundation/hardhat-toolbox");
+require("@openzeppelin/hardhat-upgrades");    // load the upgrades plugin
+
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {

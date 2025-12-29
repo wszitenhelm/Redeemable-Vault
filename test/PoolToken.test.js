@@ -242,26 +242,37 @@ describe("PoolToken – Security Tests", function () {
     });
   });
   
-  describe("Small Rounding Dust", function () {
-    it("Should retain small rounding dust in the pool", async function () {
-      const userAmount = 3n; // very small number
+  describe("Dust and Precision Accounting", function () {
+    it("Should quantify and track trapped dust", async function () {
+      const userAmount = 3n; 
       const proceedsAmount = 10n;
   
-      // User deposit
       await usdToken.connect(user1).mint(user1.address, userAmount);
       await usdToken.connect(user1).approve(poolToken.target, userAmount);
       await poolToken.connect(user1).deposit(userAmount);
   
-      // Owner deposits proceeds
       await usdToken.connect(owner).mint(owner.address, proceedsAmount);
       await usdToken.connect(owner).approve(poolToken.target, proceedsAmount);
       await poolToken.connect(owner).depositProceeds(proceedsAmount);
   
       const pending = await poolToken.pendingProceeds(user1.address);
-      const accPerShare = await poolToken.accProceedsPerShare();
+      
+      // Check exact math: 10 / 3 is 3.333... * 3 = 9. 
+      // We expect exactly 1 unit of dust to be trapped.
+      const expectedDust = 1n; 
+      expect(pending).to.equal(9n);
   
-      // Pending may not perfectly match due to rounding
-      expect(pending).to.be.lte((userAmount * accPerShare) / (10n ** 18n));
+      // Check the contract's actual USD balance
+      // The pool holds the initial deposit (3) + the proceeds (10) = 13
+      const totalPoolBalance = await usdToken.balanceOf(poolToken.target);
+      expect(totalPoolBalance).to.equal(userAmount + proceedsAmount);
+  
+      // Verify that after claiming, only the deposit + dust remains
+      await poolToken.connect(user1).claimProceeds();
+      const balanceAfterClaim = await usdToken.balanceOf(poolToken.target);
+      
+      // Remaining = Initial Deposit (3) + Dust (1) = 4
+      expect(balanceAfterClaim).to.equal(userAmount + expectedDust);
     });
   });
 

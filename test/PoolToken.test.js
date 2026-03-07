@@ -7,24 +7,18 @@ describe("PoolToken Tests", function () {
 
   beforeEach(async function () {
     [owner, user1, user2, attacker] = await ethers.getSigners();
-  
+
     const USDToken = await ethers.getContractFactory("USDToken");
     usdToken = await USDToken.deploy();
     await usdToken.waitForDeployment();
-  
+
     const PoolToken = await ethers.getContractFactory("PoolTokenV1");
-  
-    // Use upgrades.deployProxy instead of deploy
+
     poolToken = await upgrades.deployProxy(PoolToken, [usdToken.target], {
-      initializer: "initialize"
+      initializer: "initialize",
     });
     await poolToken.waitForDeployment();
   });
-  
-
-  /* =============================================================
-     METADATA TESTS
-     ============================================================= */
 
   describe("Token Metadata", function () {
     it("Has correct name, symbol and decimals", async function () {
@@ -33,10 +27,6 @@ describe("PoolToken Tests", function () {
       expect(await poolToken.decimals()).to.equal(18);
     });
   });
-
-  /* =============================================================
-     CORE SAFETY TESTS
-     ============================================================= */
 
   describe("Deposit & Mint Safety", function () {
     it("Mints pool tokens 1:1 with USD deposits", async function () {
@@ -51,16 +41,11 @@ describe("PoolToken Tests", function () {
     });
   });
 
-  /* =============================================================
-     EVENT EMISSION
-     ============================================================= */
-
   describe("Event Emission", function () {
     it("Emits ProceedsDeposited event", async function () {
       const deposit = ethers.parseEther("1000");
       const proceeds = ethers.parseEther("100");
 
-      // Need pool tokens to exist first
       await usdToken.mint(user1.address, deposit);
       await usdToken.connect(user1).approve(poolToken.target, deposit);
       await poolToken.connect(user1).deposit(deposit);
@@ -68,16 +53,13 @@ describe("PoolToken Tests", function () {
       await usdToken.mint(owner.address, proceeds);
       await usdToken.connect(owner).approve(poolToken.target, proceeds);
 
-      const expectedAccProceedsPerShare = (proceeds * ethers.parseEther("1")) / deposit;
+      const expectedAccProceedsPerShare =
+        (proceeds * ethers.parseEther("1")) / deposit;
       await expect(poolToken.connect(owner).depositProceeds(proceeds))
         .to.emit(poolToken, "ProceedsDeposited")
         .withArgs(proceeds, expectedAccProceedsPerShare);
     });
   });
-
-  /* =============================================================
-     LATE DEPOSITOR / FLASH-LOAN STYLE ATTACK PREVENTION
-     ============================================================= */
 
   describe("Late Depositor Protection", function () {
     it("Prevents new depositors from claiming past proceeds", async function () {
@@ -89,7 +71,9 @@ describe("PoolToken Tests", function () {
       await usdToken.mint(owner.address, proceeds);
 
       await usdToken.connect(user1).approve(poolToken.target, deposit);
-      await usdToken.connect(attacker).approve(poolToken.target, ethers.MaxUint256);
+      await usdToken
+        .connect(attacker)
+        .approve(poolToken.target, ethers.MaxUint256);
       await usdToken.connect(owner).approve(poolToken.target, proceeds);
 
       await poolToken.connect(user1).deposit(deposit);
@@ -101,10 +85,6 @@ describe("PoolToken Tests", function () {
       expect(await poolToken.pendingProceeds(user1.address)).to.equal(proceeds);
     });
   });
-
-  /* =============================================================
-     CLAIM & WITHDRAW SAFETY (NO BAD DEBT)
-     ============================================================= */
 
   describe("Claiming & Withdrawal Safety", function () {
     it("Claims proceeds once and prevents double-claiming", async function () {
@@ -123,8 +103,9 @@ describe("PoolToken Tests", function () {
       await poolToken.connect(user1).claimProceeds();
       expect(await poolToken.pendingProceeds(user1.address)).to.equal(0);
 
-      await expect(poolToken.connect(user1).claimProceeds())
-        .to.be.revertedWith("PoolToken: no proceeds to claim");
+      await expect(poolToken.connect(user1).claimProceeds()).to.be.revertedWith(
+        "PoolToken: no proceeds to claim"
+      );
     });
 
     it("Withdraws USD and settles all proceeds without bad debt", async function () {
@@ -147,10 +128,6 @@ describe("PoolToken Tests", function () {
       expect(await poolToken.userDebt(user1.address)).to.equal(0);
     });
   });
-
-  /* =============================================================
-     PRECISION & ROUNDING SAFETY
-     ============================================================= */
 
   describe("Precision & Rounding", function () {
     it("Distributes proceeds proportionally without inflation", async function () {
@@ -177,10 +154,6 @@ describe("PoolToken Tests", function () {
     });
   });
 
-  /* =============================================================
-     ZERO-SUPPLY EDGE CASE
-     ============================================================= */
-
   describe("Zero Supply Edge Case", function () {
     it("Rejects proceeds deposit when no pool tokens exist", async function () {
       const proceeds = ethers.parseEther("100");
@@ -194,159 +167,195 @@ describe("PoolToken Tests", function () {
     });
   });
 
-  /* =============================================================
-     REENTRANCY PROTECTION
-     ============================================================= */
+  describe("Reentrancy Protection", function () {
+    it("Should block reentrancy during claimProceeds", async function () {
+      const MaliciousUSD = await ethers.getContractFactory("MaliciousUSD");
+      const maliciousUSD = await MaliciousUSD.deploy();
+      await maliciousUSD.waitForDeployment();
 
-     describe("Reentrancy Protection", function () {
-      it("Should block reentrancy during claimProceeds", async function () {
-        const MaliciousUSD = await ethers.getContractFactory("MaliciousUSD");
-        const maliciousUSD = await MaliciousUSD.deploy();
-        await maliciousUSD.waitForDeployment();
-  
-        const PoolToken = await ethers.getContractFactory("PoolTokenV1");
-  
-        // Deploy upgradeable proxy
-        const pool = await upgrades.deployProxy(PoolToken, [maliciousUSD.target], {
-          initializer: "initialize"
-        });
-        await pool.waitForDeployment();
-  
-        await maliciousUSD.setPool(pool.target);
-  
-        // Setup balances
-        const deposit = ethers.parseEther("1000");
-        await maliciousUSD.mint(user1.address, deposit);
-        await maliciousUSD.mint(owner.address, deposit);
-  
-        await maliciousUSD.connect(user1).approve(pool.target, deposit);
-        await maliciousUSD.connect(owner).approve(pool.target, deposit);
-  
-        await pool.connect(user1).deposit(deposit);
-        await pool.connect(owner).depositProceeds(ethers.parseEther("100"));
-  
-        await maliciousUSD.enableAttack();
-  
-        await expect(pool.connect(user1).claimProceeds())
-        .to.be.revertedWithCustomError(pool, "ReentrancyGuardReentrantCall");
-    
-      });
-  });  
-  
+      const PoolToken = await ethers.getContractFactory("PoolTokenV1");
 
-/* =============================================================
-   ADDITIONAL TESTS FOR ADMIN & UPGRADE & ROUNDING DUST
-   ============================================================= */
+      const pool = await upgrades.deployProxy(
+        PoolToken,
+        [maliciousUSD.target],
+        {
+          initializer: "initialize",
+        }
+      );
+      await pool.waitForDeployment();
 
-   describe("Admin Access Control", function () {
-    it("Only owner can deposit proceeds", async function () {
-      const proceeds = ethers.parseEther("100");
-  
-      await usdToken.mint(user1.address, proceeds);
-      await usdToken.connect(user1).approve(poolToken.target, proceeds);
-  
+      await maliciousUSD.setPool(pool.target);
+
+      const deposit = ethers.parseEther("1000");
+      await maliciousUSD.mint(user1.address, deposit);
+      await maliciousUSD.mint(owner.address, deposit);
+
+      await maliciousUSD.connect(user1).approve(pool.target, deposit);
+      await maliciousUSD.connect(owner).approve(pool.target, deposit);
+
+      await pool.connect(user1).deposit(deposit);
+      await pool.connect(owner).depositProceeds(ethers.parseEther("100"));
+
+      await maliciousUSD.enableAttack();
+
       await expect(
-        poolToken.connect(user1).depositProceeds(proceeds)
-      ).to.be.revertedWith("PoolToken: only admin can deposit proceeds");
+        pool.connect(user1).claimProceeds()
+      ).to.be.revertedWithCustomError(pool, "ReentrancyGuardReentrantCall");
     });
   });
-  
+
+  describe("Admin Access Control", function () {
+    it("Only owner can deposit proceeds", async function () {
+      const proceeds = ethers.parseEther("100");
+
+      await usdToken.mint(user1.address, proceeds);
+      await usdToken.connect(user1).approve(poolToken.target, proceeds);
+
+      await expect(
+        poolToken.connect(user1).depositProceeds(proceeds)
+      ).to.be.revertedWith("PoolToken: only admin");
+    });
+  });
+
+  describe("Pause Controls", function () {
+    it("Allows admin to pause inflows but still lets users withdraw", async function () {
+      const amount = ethers.parseEther("100");
+
+      await usdToken.mint(user1.address, amount);
+      await usdToken.connect(user1).approve(poolToken.target, amount);
+      await poolToken.connect(user1).deposit(amount);
+
+      await poolToken.connect(owner).setDepositsPaused(true);
+
+      await usdToken.mint(owner.address, amount);
+      await usdToken.connect(owner).approve(poolToken.target, amount);
+
+      await expect(poolToken.connect(owner).deposit(amount)).to.be.revertedWith(
+        "PoolToken: deposits paused"
+      );
+      await expect(
+        poolToken.connect(owner).depositProceeds(amount)
+      ).to.be.revertedWith("PoolToken: deposits paused");
+
+      await expect(poolToken.connect(user1).withdraw(amount)).to.not.be.reverted;
+    });
+
+    it("Rejects pause changes from non-admin", async function () {
+      await expect(
+        poolToken.connect(user1).setDepositsPaused(true)
+      ).to.be.revertedWith("PoolToken: only admin");
+    });
+  });
+
   describe("Dust and Precision Accounting", function () {
     it("Should quantify and track trapped dust", async function () {
-      const userAmount = 3n; 
+      const userAmount = 3n;
       const proceedsAmount = 10n;
-  
+
       await usdToken.connect(user1).mint(user1.address, userAmount);
       await usdToken.connect(user1).approve(poolToken.target, userAmount);
       await poolToken.connect(user1).deposit(userAmount);
-  
+
       await usdToken.connect(owner).mint(owner.address, proceedsAmount);
       await usdToken.connect(owner).approve(poolToken.target, proceedsAmount);
       await poolToken.connect(owner).depositProceeds(proceedsAmount);
-  
+
       const pending = await poolToken.pendingProceeds(user1.address);
-      
-      // Check exact math: 10 / 3 is 3.333... * 3 = 9. 
-      // Expect exactly 1 unit of dust to be trapped.
-      const expectedDust = 1n; 
+
+      const expectedDust = 1n;
       expect(pending).to.equal(9n);
-  
-      // Check the contract's actual USD balance
-      // The pool holds the initial deposit (3) + the proceeds (10) = 13
+
       const totalPoolBalance = await usdToken.balanceOf(poolToken.target);
       expect(totalPoolBalance).to.equal(userAmount + proceedsAmount);
-  
-      // Verify that after claiming, only the deposit + dust remains
+
       await poolToken.connect(user1).claimProceeds();
       const balanceAfterClaim = await usdToken.balanceOf(poolToken.target);
-      
-      // Remaining = Initial Deposit (3) + Dust (1) = 4
+
       expect(balanceAfterClaim).to.equal(userAmount + expectedDust);
+    });
+  });
+
+  describe("Transfer Restrictions", function () {
+    it("Blocks user-to-user transfer to preserve proceeds accounting", async function () {
+      const amount = ethers.parseEther("50");
+
+      await usdToken.mint(user1.address, amount);
+      await usdToken.connect(user1).approve(poolToken.target, amount);
+      await poolToken.connect(user1).deposit(amount);
+
+      await expect(
+        poolToken.connect(user1).transfer(user2.address, 1)
+      ).to.be.revertedWith("PoolToken: transfers disabled");
     });
   });
 
   describe("PoolToken Upgrade", function () {
     it("Should preserve state and allow new functions after upgrade", async function () {
-      
       await usdToken.mint(owner.address, ethers.parseEther("1000"));
-      await usdToken.connect(owner).approve(poolToken.target, ethers.parseEther("1000"));
+      await usdToken
+        .connect(owner)
+        .approve(poolToken.target, ethers.parseEther("1000"));
       await poolToken.connect(owner).deposit(ethers.parseEther("500"));
-  
-      // Upgrade to V2
+
       const PoolTokenV2 = await ethers.getContractFactory("PoolTokenV2");
-      const upgraded = await upgrades.upgradeProxy(poolToken.target, PoolTokenV2);
-      await upgraded.waitForDeployment(); // Good practice to wait
-  
-      // Verify state
+      const upgraded = await upgrades.upgradeProxy(
+        poolToken.target,
+        PoolTokenV2
+      );
+      await upgraded.waitForDeployment();
+
       const balance = await upgraded.balanceOf(owner.address);
       expect(balance).to.equal(ethers.parseEther("500"));
-  
-      // New function works
+
       await upgraded.newFeature();
     });
   });
-  
-  
 
-  /* =============================================================
-     ADMIN TRANSFER
-     ============================================================= */
+  describe("PoolToken - Admin Transfer", function () {
+    it("Allows admin transfer and acceptance", async function () {
+      const [adminSigner, newAdmin] = await ethers.getSigners();
 
-     describe("PoolToken – Admin Transfer", function () {
-        it("Allows admin transfer and acceptance", async function () {
-          const [owner, newAdmin] = await ethers.getSigners();
-      
-          // Admin initiates transfer
-          await expect(poolToken.connect(owner).transferAdmin(newAdmin.address))
-            .to.emit(poolToken, "AdminTransferInitiated")
-            .withArgs(owner.address, newAdmin.address);
-      
-          expect(await poolToken.pendingAdmin()).to.equal(newAdmin.address);
-      
-          // Pending admin accepts
-          await expect(poolToken.connect(newAdmin).acceptAdmin())
-            .to.emit(poolToken, "AdminTransferCompleted")
-            .withArgs(owner.address, newAdmin.address);
-      
-          expect(await poolToken.admin()).to.equal(newAdmin.address);
-          expect(await poolToken.pendingAdmin()).to.equal(ethers.ZeroAddress);
-        });
-      
-        it("Reverts on unauthorized or invalid actions", async function () {
-          const [owner, newAdmin, attacker] = await ethers.getSigners();
-      
-          // Only admin can initiate
-          await expect(poolToken.connect(attacker).transferAdmin(newAdmin.address))
-            .to.be.revertedWith("PoolToken: only admin");
-      
-          // Cannot transfer to zero address
-          await expect(poolToken.connect(owner).transferAdmin(ethers.ZeroAddress))
-            .to.be.revertedWith("PoolToken: invalid admin address");
-      
-          // Only pending admin can accept
-          await poolToken.connect(owner).transferAdmin(newAdmin.address);
-          await expect(poolToken.connect(attacker).acceptAdmin())
-            .to.be.revertedWith("PoolToken: not pending admin");
-        });
-      });      
+      await expect(poolToken.connect(adminSigner).transferAdmin(newAdmin.address))
+        .to.emit(poolToken, "AdminTransferInitiated")
+        .withArgs(adminSigner.address, newAdmin.address);
+
+      expect(await poolToken.pendingAdmin()).to.equal(newAdmin.address);
+
+      await expect(poolToken.connect(newAdmin).acceptAdmin())
+        .to.emit(poolToken, "AdminTransferCompleted")
+        .withArgs(adminSigner.address, newAdmin.address);
+
+      expect(await poolToken.admin()).to.equal(newAdmin.address);
+      expect(await poolToken.pendingAdmin()).to.equal(ethers.ZeroAddress);
+    });
+
+    it("Reverts on unauthorized or invalid actions", async function () {
+      const [adminSigner, newAdmin, badActor] = await ethers.getSigners();
+
+      await expect(
+        poolToken.connect(badActor).transferAdmin(newAdmin.address)
+      ).to.be.revertedWith("PoolToken: only admin");
+
+      await expect(
+        poolToken.connect(adminSigner).transferAdmin(ethers.ZeroAddress)
+      ).to.be.revertedWith("PoolToken: invalid admin address");
+
+      await poolToken.connect(adminSigner).transferAdmin(newAdmin.address);
+      await expect(poolToken.connect(badActor).acceptAdmin()).to.be.revertedWith(
+        "PoolToken: not pending admin"
+      );
+    });
+  });
+
+  describe("Implementation Hardening", function () {
+    it("Disallows initializing the implementation contract", async function () {
+      const PoolTokenImpl = await ethers.getContractFactory("PoolTokenV1");
+      const implementation = await PoolTokenImpl.deploy();
+      await implementation.waitForDeployment();
+
+      await expect(
+        implementation.initialize(usdToken.target)
+      ).to.be.revertedWithCustomError(implementation, "InvalidInitialization");
+    });
+  });
 });

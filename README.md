@@ -1,127 +1,101 @@
 # Redeemable-Vault
 
-A smart contract application that allows users to deposit tokens and later receive dividend payouts (proceeds) proportional to their initial token deposits. 
+A Hardhat project implementing a redeemable vault with upgradeable pool shares and proportional proceeds distribution.
 
 ## Overview
 
-The application consists of two main token contracts:
+The system has two contracts:
 
-1. **USD Token** - An ERC20 token representing the underlying asset.
-                 - Any user should be able to mint any amount of USD tokens
+1. **USDToken**
+- ERC20 underlying token used for deposits and proceeds.
+- In this repo it is intentionally permissive for testing: any user can mint.
 
-2. **Pool Token** - An ERC20 token contract that allows USD tokens to be deposited and withdrawn 
-                    in  exchange for pool tokens.
+2. **PoolTokenV1** (UUPS-style proxy deployment via OpenZeppelin upgrades plugin)
+- Users deposit USD and receive POOL shares 1:1.
+- Admin can deposit proceeds, which are distributed pro-rata via cumulative accounting.
+- Users can claim proceeds or receive them automatically on withdraw.
 
-#### Functionality
+## Core Mechanics
 
-1. **Deposits**
-   - Depositing USD tokens grants the user pool tokens (1:1 conversion)
-   - The contract holds onto the USD tokens
-   - This method should be executable by any user
+1. **Deposit (`deposit`)**
+- User transfers USD into the pool.
+- Contract mints POOL 1:1.
+- User debt is updated so new deposits cannot claim historical proceeds.
 
-2. **Deposit Proceeds**
-   - Proceeds are USD tokens that should be distributed to pool token holders
-   - Proceeds should be newly minted tokens from the USD token smart contract
+2. **Deposit Proceeds (`depositProceeds`)**
+- Admin-only.
+- Proceeds are transferred in and `accProceedsPerShare` is updated.
+- Reverts if total supply is zero.
 
-3. **Proceeds Withdrawal/Distribution**
-   - A mechanism for users to withdraw proceeds, or for the contract to distribute proceeds to users
-   - Proceeds should be distributed based on each user's relative share of the total supply of pool tokens at the time the proceeds were deposited
+3. **Claim Proceeds (`claimProceeds`)**
+- User claims currently pending proceeds.
+- Debt is updated before transfer (checks-effects-interactions).
 
-4. **Withdrawals**
-   - Users should be able to convert their pool tokens back to USD tokens (1:1 conversion)
-   - Users shouldn't have any outstanding proceed withdrawals after withdrawing (if withdrawals were the chosen method)
+4. **Withdraw (`withdraw`)**
+- Settles pending proceeds first.
+- Burns POOL.
+- Returns USD principal 1:1.
+
+## Security and Hardening
+
+Implemented protections:
+
+- **Reentrancy protection** on state-mutating flows via `ReentrancyGuardUpgradeable`.
+- **Safe ERC20 interactions** via `SafeERC20` (`safeTransfer`, `safeTransferFrom`).
+- **Implementation initializer lock** via constructor `_disableInitializers()`.
+- **Admin-only privileged actions** (`depositProceeds`, `setDepositsPaused`, admin transfer).
+- **Emergency inflow pause**: admin can pause `deposit` and `depositProceeds` while still allowing withdrawals.
+- **Non-transferable POOL shares**: user-to-user `transfer/transferFrom` is disabled to preserve proceeds accounting correctness.
+- **Late depositor protection** through per-user debt snapshots.
+- **No-bad-debt behavior** by reverting on failed transfers and settling claims before principal withdrawal.
+
+## Important Design Decision
+
+POOL is intentionally **non-transferable** in this version. This avoids debt/accounting desynchronization that would otherwise occur with ERC20 transfers under a cumulative proceeds model.
+
+If transferability is required later, reward debt migration/settlement must be implemented in token transfer hooks with additional invariant testing.
+
+## Upgradeability
+
+- Current implementation: `PoolTokenV1`
+- Example upgrade target: `PoolTokenV2`
+- Proxy deployment and upgrades are managed through `@openzeppelin/hardhat-upgrades`.
+- Storage is preserved across upgrades when layout compatibility is maintained.
 
 ## Project Setup
-
-This project uses Hardhat for development, testing, and deployment.
-
-### Installation
 
 ```bash
 npm install
 ```
 
-### Available Commands
+## Commands
 
-- `npx hardhat compile` - Compile Solidity contracts
-- `npx hardhat test` - Run Hardhat tests
-- `npx hardhat node` - Start a local Hardhat node
-- `npx hardhat run scripts/deployV1.js --network localhost` - Deploy contract
-- `npx hardhat run scripts/upgradeV2.js --network localhost` – Upgrade proxy to V2
+- `npx hardhat compile`
+- `npx hardhat test`
+- `npx hardhat node`
+- `npx hardhat run scripts/deployV1.js --network localhost`
+- `npx hardhat run scripts/upgradeV2.js --network localhost`
 
-## Design Choices & Assumptions
+## Testing Coverage
 
-- Proceeds are distributed using a cumulative `accProceedsPerShare` model to ensure gas-efficient solution.
-- Late depositors do not receive past proceeds.
-- Proceeds are claimable independently or automatically on withdrawal.
-- USD token is assumed to be a standard ERC-20 with no transfer fees or callbacks.
-- Reentrancy protection is enforced using `ReentrancyGuard`.
-- The protocol is designed to fail safely (revert) rather than create bad debt.
+The suite covers:
 
-## Security Considerations
+- Metadata and 1:1 mint/redeem behavior
+- Proceeds distribution correctness
+- Late depositor protection
+- Double-claim prevention
+- Reentrancy resistance
+- Zero-supply proceeds edge case
+- Dust/rounding behavior
+- Admin transfer controls
+- Upgrade state preservation
+- Pause controls
+- Transfer restriction enforcement
+- Implementation initializer lock
 
-- Reentrancy protected via checks-effects-interactions and `nonReentrant`.
-- Double-claim prevention via per-user debt accounting.
-- Withdrawals always ensure sufficient USD balance exists.
+## Assumptions and Limitations
 
-## Testing
-
-The test suite demonstrates resistance to:
-- Reentrancy attacks
-- Late depositor exploits
-- Double claiming
-- Insolvency / bad debt scenarios
-
-## Assumptions
-
-- Accounting is per-transaction sequential. Multiple deposits or withdrawals in the same block are processed in order.
-- Proceeds cannot be deposited when no pool tokens exist.
-- Proceeds are distributed based on cumulative `accProceedsPerShare` using 1e18 scaling. Small rounding dust remains in the pool.
-Integer Division & Dust: The contract uses the standard "Floor" rounding inherent in Solidity. When depositProceeds is called, any remainder (dust) resulting from the division of rewards by the total supply stays within the contract. This ensures the vault remains over-collateralized and prevents execution failure due to rounding errors.
-- Only a trusted role (admin/owner) can deposit proceeds.
-- Front-running / same-block manipulation is mitigated: new deposits do not retroactively receive past proceeds.
-- Upgradeability is planned as a future improvement; current balances and accounting are not migrated.
-
-### Transaction Ordering Assumption
-
-Proceeds are distributed based on the pool token balances at the exact moment
-`depositProceeds()` is executed.
-
-Due to Ethereum’s block construction and MEV mechanics, transactions within the
-same block may be reordered by validators. As a result, a user who submits a
-deposit transaction intended to precede a proceeds deposit may not receive those
-proceeds if the proceeds transaction is mined first.
-
-This is an inherent limitation of per-transaction accounting on Ethereum.
-The protocol guarantees correctness
-per transaction, not intent-based fairness across same-block operations.
-
-## Known Limitations & Assumptions
-
-### Token Transfers Between Users
-**Assumption:** The current implementation assumes that `PoolTokens` are not transferred between users via the standard ERC-20 `transfer` or `transferFrom` functions.
-
-**Technical Detail:** The reward accounting logic (cumulative accumulator) is currently triggered only during `deposit()`, `withdraw()`, and `claimProceeds()`. 
-* If a user transfers POOL tokens to another address, the `userDebt` (accounting for proceeds already claimed) will not automatically move with the tokens. 
-* This could lead to a scenario where the recipient is able to claim rewards that the sender was already entitled to, or the sender's debt remains inaccurately high.
-
-**Production Recommendation:**
-To make this protocol "transfer-ready," the `_update` (OpenZeppelin v5.x) or `_beforeTokenTransfer` (OpenZeppelin v4.x) internal functions should be overridden to settle pending proceeds for both the `from` and `to` addresses before any balance change occurs.
-
-## Upgradable Contract
-
-`PoolToken` is implemented as an **upgradeable proxy using OpenZeppelin upgrades plugin**.  
-
-- Current implementation: `PoolTokenV1`  
-- Upgraded version: `PoolTokenV2`  
-- All state (balances, proceeds, userDebt, admin) is preserved during upgrades.  
-- Diamond pattern **not used** because the files are small (<24 kB). Diamonds are recommended for very large or modular contracts.  
-
-Deployment & upgrade scripts:
-- `deployV1.js` – deploys `USDToken` and `PoolTokenV1` proxy  
-- `upgradeV2.js` – upgrades the proxy to `PoolTokenV2`  
-
-Tests ensure:
-- Original state persists after upgrade  
-- New functions in V2 work as expected  
-- Existing logic is unaffected
+- USDToken in this repo is a mock and not production-safe.
+- Integer division creates rounding dust that remains in the pool.
+- Transaction ordering is per-mined-order; same-block intent fairness is not guaranteed.
+- Hardhat currently warns about local Node.js version compatibility in this environment.
